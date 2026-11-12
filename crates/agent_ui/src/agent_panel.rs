@@ -94,7 +94,8 @@ use text::OffsetRangeExt;
 use theme_settings::ThemeSettings;
 use ui::{
     ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding, PopoverMenu,
-    PopoverMenuHandle, ProjectEmptyState, Tab, Tooltip, prelude::*, utils::WithRemSize,
+    PopoverMenuHandle, ProjectEmptyState, Tab, TabBar, TabPosition, Tooltip, prelude::*,
+    utils::WithRemSize,
 };
 use util::ResultExt as _;
 use workspace::{
@@ -1149,6 +1150,7 @@ pub struct AgentPanel {
     _draft_editor_observation: Option<Subscription>,
     _active_draft_reclaim_observation: Option<Subscription>,
     _thread_metadata_store_subscription: Subscription,
+    _thread_metadata_store_observation: Subscription,
     _settings_subscription: Subscription,
     retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
     last_context_source: Option<AgentContextSource>,
@@ -1526,6 +1528,9 @@ impl AgentPanel {
             },
         );
 
+        let _thread_metadata_store_observation =
+            cx.observe(&ThreadMetadataStore::global(cx), |_, _, cx| cx.notify());
+
         let _settings_subscription = cx.observe_global::<SettingsStore>(|this, cx| {
             this.cleanup_retained_threads(cx);
         });
@@ -1571,6 +1576,7 @@ impl AgentPanel {
             _draft_editor_observation: None,
             _active_draft_reclaim_observation: None,
             _thread_metadata_store_subscription,
+            _thread_metadata_store_observation,
             _settings_subscription,
             retained_thread_subscriptions: HashMap::default(),
             last_context_source: None,
@@ -6268,6 +6274,92 @@ impl AgentPanel {
             .child(toolbar_content)
     }
 
+    fn render_thread_tabs(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let store = ThreadMetadataStore::try_global(cx)?;
+        let project = self.project.read(cx);
+        let root_paths = project
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path())
+            .collect::<Vec<_>>();
+        let path_list = PathList::new(&root_paths);
+        let mut threads = store
+            .read(cx)
+            .entries_for_path(&path_list, project.remote_connection_options(cx))
+            .filter(|metadata| !metadata.is_draft())
+            .map(|metadata| {
+                (
+                    metadata.thread_id,
+                    metadata.agent_id.clone(),
+                    metadata.display_title(),
+                    metadata.folder_paths().clone(),
+                    metadata.title.clone(),
+                    metadata.updated_at,
+                )
+            })
+            .collect::<Vec<_>>();
+        if threads.is_empty() {
+            return None;
+        }
+        threads.sort_by(|a, b| b.5.cmp(&a.5));
+
+        let active_thread_id = self.active_thread_id(cx);
+        let selected_index = threads
+            .iter()
+            .position(|thread| Some(thread.0) == active_thread_id);
+        let last_index = threads.len() - 1;
+
+        let tabs = threads.into_iter().enumerate().map(
+            |(index, (thread_id, agent_id, display_title, work_dirs, title, _))| {
+                let position = if index == 0 {
+                    TabPosition::First
+                } else if index == last_index {
+                    TabPosition::Last
+                } else {
+                    TabPosition::Middle(selected_index.map_or(
+                        std::cmp::Ordering::Equal,
+                        |selected| index.cmp(&selected),
+                    ))
+                };
+                Tab::new(("agent-thread-tab", index))
+                    .position(position)
+                    .toggle_state(selected_index == Some(index))
+                    .child(
+                        div().max_w(rems(12.)).child(
+                            Label::new(display_title.clone())
+                                .size(LabelSize::Small)
+                                .truncate(),
+                        ),
+                    )
+                    .tooltip(Tooltip::text(display_title))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.load_agent_thread(
+                            Agent::from(agent_id.clone()),
+                            thread_id,
+                            Some(work_dirs.clone()),
+                            title.clone(),
+                            true,
+                            AgentThreadSource::AgentPanel,
+                            window,
+                            cx,
+                        );
+                    }))
+            },
+        );
+
+        Some(
+            TabBar::new("agent-thread-tabs")
+                .children(tabs)
+                .end_child(
+                    IconButton::new("agent-thread-tabs-new", IconName::Plus)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::for_action_title("New Thread", &NewThread))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(NewThread.boxed_clone(), cx)
+                        }),
+                ),
+        )
+    }
+
     fn should_render_trial_end_upsell(&self, cx: &mut Context<Self>) -> bool {
         if TrialEndUpsell::dismissed(cx) {
             return false;
@@ -6671,6 +6763,7 @@ impl Render for AgentPanel {
                 }
             }))
             .child(self.render_toolbar(window, cx))
+            .children(self.render_thread_tabs(cx))
             .children(self.render_new_user_onboarding(window, cx))
             .map(|parent| match self.visible_surface() {
                 VisibleSurface::Uninitialized if !self.has_open_project(cx) => {
