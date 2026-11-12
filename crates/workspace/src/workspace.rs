@@ -10291,6 +10291,7 @@ impl Render for Workspace {
                             .flex_1()
                             .w_full()
                             .min_h_0()
+                            .items_stretch()
                             .child(self.render_activity_bar(cx))
                             .child(
                         div()

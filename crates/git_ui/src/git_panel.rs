@@ -1378,6 +1378,26 @@ pub struct GitPanel {
     change_entries: Vec<GitStatusEntry>,
     /// Diff editors look up a file's entry for every header they draw.
     change_entry_indices: HashMap<RepoPath, usize>,
+    pull_request: Option<BranchPullRequest>,
+    /// The remote URLs and branch the current `pull_request` lookup was made
+    /// for, so repository updates that don't change them don't refetch.
+    pull_request_query: Option<PullRequestQuery>,
+    pull_request_task: Task<()>,
+}
+
+#[derive(Clone)]
+struct BranchPullRequest {
+    details: git::PullRequestDetails,
+    remote_name: SharedString,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PullRequestQuery {
+    head_branch: String,
+    /// Remotes to search for the pull request, in order. Pull requests from a
+    /// fork usually target `upstream`, with the head on the tracked remote.
+    remotes: Vec<(SharedString, String)>,
+    head_remote_url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1749,6 +1769,9 @@ impl GitPanel {
                 branch_base: BranchBase::new(),
                 change_entries: Vec::new(),
                 change_entry_indices: HashMap::default(),
+                pull_request: None,
+                pull_request_query: None,
+                pull_request_task: Task::ready(()),
             };
 
             this.schedule_update(window, cx);
@@ -5327,6 +5350,131 @@ impl GitPanel {
         }
     }
 
+    fn pull_request_query(&self, cx: &App) -> Option<PullRequestQuery> {
+        let repository = self.active_repository.as_ref()?.read(cx);
+        let upstream = repository
+            .branch
+            .as_ref()?
+            .upstream
+            .as_ref()
+            .filter(|upstream| matches!(upstream.tracking, UpstreamTracking::Tracked(_)))?;
+        let head_branch = upstream.branch_name()?.to_string();
+        let head_remote_name: SharedString = upstream.remote_name()?.to_string().into();
+        let head_remote_url = match head_remote_name.as_ref() {
+            "upstream" => repository.remote_upstream_url.clone(),
+            _ => repository.remote_origin_url.clone(),
+        }?;
+
+        let mut remotes = Vec::new();
+        if let Some(upstream_url) = repository.remote_upstream_url.clone()
+            && upstream_url != head_remote_url
+        {
+            remotes.push(("upstream".into(), upstream_url));
+        }
+        remotes.push((head_remote_name, head_remote_url.clone()));
+
+        Some(PullRequestQuery {
+            head_branch,
+            remotes,
+            head_remote_url,
+        })
+    }
+
+    fn refresh_pull_request(&mut self, cx: &mut Context<Self>) {
+        let query = self.pull_request_query(cx);
+        if query == self.pull_request_query {
+            return;
+        }
+        self.pull_request_query = query.clone();
+        self.pull_request = None;
+        cx.notify();
+
+        let Some(query) = query else {
+            self.pull_request_task = Task::ready(());
+            return;
+        };
+        let provider_registry = GitHostingProviderRegistry::global(cx);
+        let http_client = cx.http_client();
+        self.pull_request_task = cx.spawn(async move |this, cx| {
+            let Some((_, head_remote)) =
+                git::parse_git_remote_url(provider_registry.clone(), &query.head_remote_url)
+            else {
+                return;
+            };
+            for (remote_name, remote_url) in &query.remotes {
+                let Some((provider, remote)) =
+                    git::parse_git_remote_url(provider_registry.clone(), remote_url)
+                else {
+                    continue;
+                };
+                let result = provider
+                    .fetch_pull_request_for_branch(
+                        &remote.owner,
+                        &remote.repo,
+                        &head_remote.owner,
+                        &query.head_branch,
+                        http_client.clone(),
+                    )
+                    .await;
+                match result {
+                    Ok(Some(details)) => {
+                        this.update(cx, |this, cx| {
+                            if this.pull_request_query.as_ref() == Some(&query) {
+                                this.pull_request = Some(BranchPullRequest {
+                                    details,
+                                    remote_name: remote_name.clone(),
+                                });
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::debug!("failed to look up pull request: {error:#}"),
+                }
+            }
+        });
+    }
+
+    fn open_pull_request(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(pull_request), Some(repository)) =
+            (self.pull_request.clone(), self.active_repository.as_ref())
+        else {
+            return;
+        };
+        let repository = repository.downgrade();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::pull_request_view::PullRequestView::open(
+                    pull_request.details,
+                    Some(pull_request.remote_name),
+                    repository,
+                    workspace,
+                    window,
+                    cx,
+                );
+            })
+            .ok();
+    }
+
+    pub(crate) fn render_pull_request_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let details = &self.pull_request.as_ref()?.details;
+        let (state_label, state_color) =
+            crate::pull_request_view::pull_request_state_label(details.state);
+        let title = format!("#{} {}", details.number, details.title);
+        Some(
+            IconButton::new("open-pull-request", IconName::PullRequest)
+                .icon_size(IconSize::Small)
+                .icon_color(state_color)
+                .tooltip(move |_window, cx| {
+                    Tooltip::with_meta(title.clone(), None, state_label, cx)
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.open_pull_request(window, cx)))
+                .into_any_element(),
+        )
+    }
+
     pub fn create_pull_request(&self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| -> anyhow::Result<()> {
             let repo = self
@@ -5834,6 +5982,7 @@ impl GitPanel {
             self.reset_branch_state(window, cx);
         }
         self.reopen_commit_buffer(window, cx);
+        self.refresh_pull_request(cx);
         self.preload_commit_history(cx);
         if self.active_tab == GitPanelTab::History {
             self.load_commit_history(cx);
@@ -10460,7 +10609,11 @@ impl RenderOnce for PanelRepoFooter {
                             },
                         )
                     })
-                    .child(div().child(branch_selector).min_w_0()),
+                    .child(div().child(branch_selector).min_w_0())
+                    .children(self.git_panel.as_ref().and_then(|git_panel| {
+                        git_panel
+                            .update(cx, |git_panel, cx| git_panel.render_pull_request_button(cx))
+                    })),
             )
             .children(if let Some(git_panel) = self.git_panel {
                 git_panel.update(cx, |git_panel, cx| git_panel.render_remote_button(cx))

@@ -13,7 +13,7 @@ use urlencoding::encode;
 
 use git::{
     BuildCommitPermalinkParams, BuildPermalinkParams, GitHostingProvider, ParsedGitRemote,
-    PullRequest, RemoteUrl,
+    PullRequest, PullRequestDetails, PullRequestState, RemoteUrl,
 };
 
 use crate::get_host_from_git_remote_url;
@@ -128,10 +128,27 @@ impl Github {
         commit: &str,
         client: &Arc<dyn HttpClient>,
     ) -> Result<Option<User>> {
+        let body = self
+            .fetch_api(
+                &format!("repos/{repo_owner}/{repo}/commits/{commit}"),
+                client,
+            )
+            .await
+            .context("error fetching GitHub commit details")?;
+        serde_json::from_slice::<CommitDetails>(&body)
+            .map(|commit| commit.author)
+            .context("failed to deserialize GitHub commit details")
+    }
+
+    async fn fetch_api(
+        &self,
+        path_and_query: &str,
+        client: &Arc<dyn HttpClient>,
+    ) -> Result<Vec<u8>> {
         let Some(host) = self.base_url.host_str() else {
             bail!("failed to get host from github base url");
         };
-        let url = format!("https://api.{host}/repos/{repo_owner}/{repo}/commits/{commit}");
+        let url = format!("https://api.{host}/{path_and_query}");
 
         let mut request = Request::get(&url)
             .header("Content-Type", "application/json")
@@ -144,7 +161,7 @@ impl Github {
         let mut response = client
             .send(request.body(AsyncBody::default())?)
             .await
-            .with_context(|| format!("error fetching GitHub commit details at {:?}", url))?;
+            .with_context(|| format!("error sending GitHub API request to {url:?}"))?;
 
         let mut body = Vec::new();
         response.body_mut().read_to_end(&mut body).await?;
@@ -157,12 +174,61 @@ impl Github {
             );
         }
 
-        let body_str = std::str::from_utf8(&body)?;
-
-        serde_json::from_str::<CommitDetails>(body_str)
-            .map(|commit| commit.author)
-            .context("failed to deserialize GitHub commit details")
+        Ok(body)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequest {
+    number: u32,
+    html_url: String,
+    title: String,
+    body: Option<String>,
+    state: String,
+    #[serde(default)]
+    draft: bool,
+    merged_at: Option<String>,
+    user: Option<ApiPullRequestUser>,
+    base: ApiPullRequestRef,
+    head: ApiPullRequestRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequestUser {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequestRef {
+    #[serde(rename = "ref")]
+    name: String,
+}
+
+fn parse_pull_requests(body: &[u8]) -> Result<Option<PullRequestDetails>> {
+    let pull_requests = serde_json::from_slice::<Vec<ApiPullRequest>>(body)
+        .context("failed to deserialize GitHub pull requests")?;
+    let Some(pull_request) = pull_requests.into_iter().next() else {
+        return Ok(None);
+    };
+    let state = if pull_request.merged_at.is_some() {
+        PullRequestState::Merged
+    } else if pull_request.state == "closed" {
+        PullRequestState::Closed
+    } else if pull_request.draft {
+        PullRequestState::Draft
+    } else {
+        PullRequestState::Open
+    };
+    Ok(Some(PullRequestDetails {
+        number: pull_request.number,
+        url: Url::parse(&pull_request.html_url)?,
+        title: pull_request.title.into(),
+        body: pull_request.body.unwrap_or_default().into(),
+        state,
+        author: pull_request.user.map(|user| user.login.into()),
+        base_branch: pull_request.base.name.into(),
+        head_branch: pull_request.head.name.into(),
+    }))
 }
 
 #[async_trait]
@@ -297,6 +363,25 @@ impl GitHostingProvider for Github {
             })
             .transpose()?;
         Ok(avatar_url)
+    }
+
+    async fn fetch_pull_request_for_branch(
+        &self,
+        repo_owner: &str,
+        repo: &str,
+        head_owner: &str,
+        head_branch: &str,
+        http_client: Arc<dyn HttpClient>,
+    ) -> Result<Option<PullRequestDetails>> {
+        let head = encode(&format!("{head_owner}:{head_branch}")).into_owned();
+        let body = self
+            .fetch_api(
+                &format!("repos/{repo_owner}/{repo}/pulls?head={head}&state=all&per_page=1"),
+                &http_client,
+            )
+            .await
+            .context("error fetching GitHub pull requests")?;
+        parse_pull_requests(&body)
     }
 }
 
@@ -616,6 +701,31 @@ mod tests {
             url.as_str(),
             "https://github.zed.com/zed-industries/zed/pull/new/feature%2Fnew-feature"
         );
+    }
+
+    #[test]
+    fn test_parse_pull_requests() {
+        assert_eq!(parse_pull_requests(b"[]").unwrap(), None);
+
+        let body = br#"[{
+            "number": 42,
+            "html_url": "https://github.com/zed-industries/zed/pull/42",
+            "title": "Add thing",
+            "body": null,
+            "state": "closed",
+            "draft": false,
+            "merged_at": "2024-01-01T00:00:00Z",
+            "user": {"login": "octocat"},
+            "base": {"ref": "main"},
+            "head": {"ref": "feature"}
+        }]"#;
+        let pull_request = parse_pull_requests(body).unwrap().unwrap();
+        assert_eq!(pull_request.number, 42);
+        assert_eq!(pull_request.state, PullRequestState::Merged);
+        assert_eq!(pull_request.body.as_ref(), "");
+        assert_eq!(pull_request.author.as_deref(), Some("octocat"));
+        assert_eq!(pull_request.base_branch.as_ref(), "main");
+        assert_eq!(pull_request.head_branch.as_ref(), "feature");
     }
 
     #[test]

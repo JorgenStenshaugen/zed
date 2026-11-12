@@ -17,6 +17,26 @@ pub struct PullRequest {
     pub url: Url,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PullRequestState {
+    Open,
+    Draft,
+    Closed,
+    Merged,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct PullRequestDetails {
+    pub number: u32,
+    pub url: Url,
+    pub title: SharedString,
+    pub body: SharedString,
+    pub state: PullRequestState,
+    pub author: Option<SharedString>,
+    pub base_branch: SharedString,
+    pub head_branch: SharedString,
+}
+
 #[derive(Clone)]
 pub struct GitRemote {
     pub host: Arc<dyn GitHostingProvider + Send + Sync + 'static>,
@@ -143,6 +163,19 @@ pub trait GitHostingProvider {
         _author_email: Option<SharedString>,
         _http_client: Arc<dyn HttpClient>,
     ) -> Result<Option<Url>> {
+        Ok(None)
+    }
+
+    /// Returns the most recent pull request whose head is `head_owner:head_branch`
+    /// and that targets `repo_owner/repo`.
+    async fn fetch_pull_request_for_branch(
+        &self,
+        _repo_owner: &str,
+        _repo: &str,
+        _head_owner: &str,
+        _head_branch: &str,
+        _http_client: Arc<dyn HttpClient>,
+    ) -> Result<Option<PullRequestDetails>> {
         Ok(None)
     }
 }

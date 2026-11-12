@@ -53,6 +53,7 @@ mod git_timestamp;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
+pub mod pull_request_view;
 pub(crate) mod remote_output;
 pub mod repository_selector;
 pub mod solo_diff_view;
