@@ -74,6 +74,7 @@ pub(super) fn subagent_label(thread: &AcpThread) -> SharedString {
 /// Most agents echo an accepted prompt almost immediately, so the in-flight status row
 /// only appears for submissions that stay unsettled long enough to be worth reporting.
 pub(crate) const UNSETTLED_SUBMISSION_REVEAL_DELAY: Duration = Duration::from_secs(1);
+const COLLAPSED_COMMAND_LINES: f32 = 3.;
 
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
 
@@ -9299,6 +9300,7 @@ impl ThreadView {
         &self,
         group: SharedString,
         is_preview: bool,
+        collapsed: bool,
         command: Entity<Markdown>,
         window: &Window,
         cx: &Context<Self>,
@@ -9356,7 +9358,28 @@ impl ThreadView {
             .relative()
             .p_1p5()
             .when(is_preview, |this| this.pt_1().children(run_command_label))
-            .child(markdown_element)
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap_1()
+                    .child(
+                        Label::new("$")
+                            .buffer_font(cx)
+                            .size(LabelSize::Small)
+                            .color(Color::Success),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            // Clamp long commands (e.g. heredocs) to a few lines until expanded.
+                            .when(collapsed, |this| {
+                                this.max_h(rems_from_px(17. * COLLAPSED_COMMAND_LINES))
+                                    .overflow_hidden()
+                            })
+                            .child(markdown_element),
+                    ),
+            )
             .child(div().absolute().top_1().right_1().child(copy_button))
     }
 
@@ -9423,18 +9446,19 @@ impl ThreadView {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "current directory".to_string());
 
-        let command_element = self.render_collapsible_command(
-            header_group.clone(),
-            false,
-            tool_call.label.clone(),
-            window,
-            cx,
-        );
-
         let is_expanded = self
             .entry_view_state
             .read(cx)
             .is_tool_call_expanded(&tool_call.id);
+
+        let command_element = self.render_collapsible_command(
+            header_group.clone(),
+            false,
+            !is_expanded,
+            tool_call.label.clone(),
+            window,
+            cx,
+        );
 
         let truncated_tooltip = truncated_output.then(|| {
             if let Some(output) = output {
@@ -10038,6 +10062,7 @@ impl ThreadView {
                         self.render_collapsible_command(
                             card_header_id.clone(),
                             true,
+                            false,
                             tool_call.label.clone(),
                             window,
                             cx,

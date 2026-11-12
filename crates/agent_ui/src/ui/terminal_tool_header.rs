@@ -147,11 +147,8 @@ impl RenderOnce for TerminalToolHeader {
 
         let child_id = |name: &str| format!("terminal-tool-{name}-{id}");
 
-        let header_bg = cx
-            .theme()
-            .colors()
-            .element_background
-            .blend(cx.theme().colors().editor_foreground.opacity(0.025));
+        let header_bg = cx.theme().colors().terminal_background;
+        let on_toggle_expand = on_toggle_expand.map(std::rc::Rc::new);
 
         let header_row = h_flex()
             .id(child_id("header"))
@@ -163,7 +160,16 @@ impl RenderOnce for TerminalToolHeader {
             .justify_between()
             .rounded_t_md()
             .child(
-                div().w_full().min_w_0().overflow_hidden().child(
+                div()
+                    .id(child_id("toggle-area"))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .when_some(on_toggle_expand.clone(), |this, handler| {
+                        this.cursor_pointer()
+                            .on_click(move |event, window, cx| handler(event, window, cx))
+                    })
+                    .child(
                     Label::new(working_dir)
                         .buffer_font(cx)
                         .size(LabelSize::XSmall)
@@ -175,8 +181,9 @@ impl RenderOnce for TerminalToolHeader {
                 Disclosure::new(child_id("disclosure"), is_expanded)
                     .opened_icon(IconName::ChevronUp)
                     .closed_icon(IconName::ChevronDown)
-                    .visible_on_hover(&hover_group)
-                    .when_some(on_toggle_expand, |this, handler| this.on_click(handler)),
+                    .when_some(on_toggle_expand, |this, handler| {
+                        this.on_click(move |event, window, cx| handler(event, window, cx))
+                    }),
             )
             .when(show_elapsed, |header| {
                 let elapsed = elapsed.unwrap_or_default();

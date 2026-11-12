@@ -359,7 +359,7 @@ pub struct AgentSettingsContent {
     pub expand_edit_card: Option<bool>,
     /// Whether to have terminal cards in the agent panel expanded, showing the whole command output.
     ///
-    /// Default: true
+    /// Default: false
     pub expand_terminal_card: Option<bool>,
     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
     /// The command is sent to the shell as if typed, so it is interpreted by your

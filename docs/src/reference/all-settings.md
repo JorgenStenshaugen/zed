@@ -7094,7 +7094,7 @@ See [Agent Panel](#agent-panel) for width, flexible sizing, and Threads Sidebar 
 | `notify_when_agent_waiting`            | `"primary_screen"`                              | Notification display: `"primary_screen"`, `"all_screens"`, or `"never"`.                              |
 | `play_sound_when_agent_done`           | `"never"`                                       | Completion and input-required sounds: `"never"`, `"when_hidden"`, or `"always"`.                      |
 | `expand_edit_card`                     | `true`                                          | Expand new edit cards to show diffs.                                                                  |
-| `expand_terminal_card`                 | `true`                                          | Expand new terminal cards to show output.                                                             |
+| `expand_terminal_card`                 | `false`                                         | Expand new terminal cards to show output.                                                             |
 | `terminal_init_command`                | `""`                                            | Command run when creating or recreating a Terminal Thread shell, or an empty string to disable.       |
 | `thinking_display`                     | `"auto"`                                        | Thinking-block presentation: `"auto"`, `"preview"`, `"always_expanded"`, or `"always_collapsed"`.     |
 | `cancel_generation_on_terminal_stop`   | `true`                                          | Cancel generation when clicking the terminal tool's Stop button.                                      |
