@@ -76,7 +76,7 @@ use futures::FutureExt as _;
 use gpui::{
     Action, Anchor, Animation, AnimationExt, AnyElement, App, AsyncWindowContext, ClipboardItem,
     Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, KeyContext, Pixels,
-    PlatformDisplay, Subscription, Task, TaskExt, WeakEntity, WindowHandle, prelude::*,
+    PlatformDisplay, ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WindowHandle, prelude::*,
     pulsating_between,
 };
 use language::LanguageRegistry;
@@ -346,6 +346,8 @@ struct SerializedAgentPanel {
     last_active_terminal_id: Option<String>,
     #[serde(default)]
     new_draft_thread_id: Option<ThreadId>,
+    #[serde(default)]
+    open_thread_ids: Vec<ThreadId>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1154,6 +1156,8 @@ pub struct AgentPanel {
     _settings_subscription: Subscription,
     retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
     last_context_source: Option<AgentContextSource>,
+    open_thread_ids: Vec<ThreadId>,
+    thread_tabs_scroll_handle: ScrollHandle,
 
     is_active: bool,
 }
@@ -1224,6 +1228,8 @@ impl AgentPanel {
             .as_ref()
             .map(|draft| draft.read(cx).thread_id);
 
+        let open_thread_ids = self.open_thread_ids.clone();
+
         let kvp = KeyValueStore::global(cx);
         self.pending_serialization = Some(cx.background_spawn(async move {
             save_serialized_panel(
@@ -1234,6 +1240,7 @@ impl AgentPanel {
                     last_active_thread,
                     last_active_terminal_id,
                     new_draft_thread_id,
+                    open_thread_ids,
                 },
                 kvp,
             )
@@ -1391,6 +1398,7 @@ impl AgentPanel {
 
                     if let Some(serialized_panel) = &serialized_panel {
                         panel.last_created_entry_kind = serialized_panel.last_created_entry_kind;
+                        panel.open_thread_ids = serialized_panel.open_thread_ids.clone();
                     } else if let Some(entry_kind) = global_last_created_entry_kind {
                         panel.last_created_entry_kind = entry_kind;
                     }
@@ -1580,6 +1588,8 @@ impl AgentPanel {
             _settings_subscription,
             retained_thread_subscriptions: HashMap::default(),
             last_context_source: None,
+            open_thread_ids: Vec::new(),
+            thread_tabs_scroll_handle: ScrollHandle::new(),
             is_active: false,
         };
 
@@ -4360,6 +4370,15 @@ impl AgentPanel {
 
         if let BaseView::AgentThread { conversation_view } = &self.base_view {
             let conversation_view = conversation_view.read(cx);
+            let thread_id = conversation_view.thread_id;
+            let tab_index = match self.open_thread_ids.iter().position(|id| *id == thread_id) {
+                Some(index) => index,
+                None => {
+                    self.open_thread_ids.push(thread_id);
+                    self.open_thread_ids.len() - 1
+                }
+            };
+            self.thread_tabs_scroll_handle.scroll_to_item(tab_index);
             let thread_agent = conversation_view.agent_key().clone();
             if self.selected_agent != thread_agent {
                 self.selected_agent = thread_agent;
@@ -6274,42 +6293,96 @@ impl AgentPanel {
             .child(toolbar_content)
     }
 
-    fn render_thread_tabs(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
-        let store = ThreadMetadataStore::try_global(cx)?;
-        let project = self.project.read(cx);
-        let root_paths = project
-            .visible_worktrees(cx)
-            .map(|worktree| worktree.read(cx).abs_path())
-            .collect::<Vec<_>>();
-        let path_list = PathList::new(&root_paths);
-        let mut threads = store
-            .read(cx)
-            .entries_for_path(&path_list, project.remote_connection_options(cx))
-            .filter(|metadata| !metadata.is_draft())
-            .map(|metadata| {
+    fn activate_thread_tab(
+        &mut self,
+        thread_id: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let metadata = ThreadMetadataStore::try_global(cx).and_then(|store| {
+            store.read(cx).entry(thread_id).map(|metadata| {
                 (
-                    metadata.thread_id,
                     metadata.agent_id.clone(),
-                    metadata.display_title(),
                     metadata.folder_paths().clone(),
                     metadata.title.clone(),
-                    metadata.updated_at,
                 )
             })
-            .collect::<Vec<_>>();
+        });
+        match metadata {
+            Some((agent_id, work_dirs, title)) => self.load_agent_thread(
+                Agent::from(agent_id),
+                thread_id,
+                Some(work_dirs),
+                title,
+                true,
+                AgentThreadSource::AgentPanel,
+                window,
+                cx,
+            ),
+            None => self.activate_retained_thread(thread_id, true, window, cx),
+        }
+    }
+
+    fn close_thread_tab(
+        &mut self,
+        thread_id: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.open_thread_ids.iter().position(|id| *id == thread_id) else {
+            return;
+        };
+        self.open_thread_ids.remove(index);
+        if self.active_thread_id(cx) == Some(thread_id) {
+            let neighbor = self
+                .open_thread_ids
+                .get(index)
+                .or_else(|| self.open_thread_ids.last())
+                .copied();
+            match neighbor {
+                Some(neighbor) => self.activate_thread_tab(neighbor, window, cx),
+                None => self.new_thread(&NewThread, window, cx),
+            }
+        }
+        self.serialize(cx);
+        cx.notify();
+    }
+
+    fn render_thread_tabs(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let store = ThreadMetadataStore::try_global(cx)?.read(cx);
+        let draft_thread_id = self
+            .draft_thread
+            .as_ref()
+            .map(|draft| draft.read(cx).thread_id);
+        let active_thread_id = self.active_thread_id(cx);
+        let threads = self
+            .open_thread_ids
+            .iter()
+            .filter_map(|thread_id| {
+                if let Some(metadata) = store.entry(*thread_id) {
+                    return Some((*thread_id, metadata.display_title()));
+                }
+                // Unsent drafts may not have a metadata row yet; keep their tab
+                // only while the panel still holds them in memory.
+                let in_memory = Some(*thread_id) == active_thread_id
+                    || Some(*thread_id) == draft_thread_id
+                    || self.retained_threads.contains_key(thread_id);
+                in_memory.then(|| (*thread_id, crate::DEFAULT_THREAD_TITLE.into()))
+            })
+            .collect::<Vec<(ThreadId, SharedString)>>();
         if threads.is_empty() {
             return None;
         }
-        threads.sort_by(|a, b| b.5.cmp(&a.5));
 
-        let active_thread_id = self.active_thread_id(cx);
         let selected_index = threads
             .iter()
-            .position(|thread| Some(thread.0) == active_thread_id);
+            .position(|(thread_id, _)| Some(*thread_id) == active_thread_id);
         let last_index = threads.len() - 1;
 
-        let tabs = threads.into_iter().enumerate().map(
-            |(index, (thread_id, agent_id, display_title, work_dirs, title, _))| {
+        let tabs = threads
+            .into_iter()
+            .enumerate()
+            .map(|(index, (thread_id, display_title))| {
                 let position = if index == 0 {
                     TabPosition::First
                 } else if index == last_index {
@@ -6323,6 +6396,15 @@ impl AgentPanel {
                 Tab::new(("agent-thread-tab", index))
                     .position(position)
                     .toggle_state(selected_index == Some(index))
+                    .end_slot(
+                        IconButton::new(("agent-thread-tab-close", index), IconName::Close)
+                            .icon_size(IconSize::XSmall)
+                            .tooltip(Tooltip::text("Close Tab"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_thread_tab(thread_id, window, cx);
+                            })),
+                    )
                     .child(
                         div().max_w(rems(12.)).child(
                             Label::new(display_title.clone())
@@ -6332,22 +6414,13 @@ impl AgentPanel {
                     )
                     .tooltip(Tooltip::text(display_title))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.load_agent_thread(
-                            Agent::from(agent_id.clone()),
-                            thread_id,
-                            Some(work_dirs.clone()),
-                            title.clone(),
-                            true,
-                            AgentThreadSource::AgentPanel,
-                            window,
-                            cx,
-                        );
+                        this.activate_thread_tab(thread_id, window, cx);
                     }))
-            },
-        );
+            });
 
         Some(
             TabBar::new("agent-thread-tabs")
+                .track_scroll(&self.thread_tabs_scroll_handle)
                 .children(tabs)
                 .end_child(
                     IconButton::new("agent-thread-tabs-new", IconName::Plus)
