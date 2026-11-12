@@ -1669,6 +1669,7 @@ pub struct Workspace {
     last_active_center_pane: Option<WeakEntity<Pane>>,
     last_active_view_id: Option<proto::ViewId>,
     status_bar: Entity<StatusBar>,
+    dock_buttons: [Entity<PanelButtons>; 3],
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -2059,12 +2060,7 @@ impl Workspace {
             .flatten()
             .map(|mw| mw.downgrade());
         let status_bar = cx.new(|cx| {
-            let mut status_bar =
-                StatusBar::new(&center_pane.clone(), multi_workspace.clone(), window, cx);
-            status_bar.add_left_item(left_dock_buttons, window, cx);
-            status_bar.add_right_item(right_dock_buttons, window, cx);
-            status_bar.add_right_item(bottom_dock_buttons, window, cx);
-            status_bar
+            StatusBar::new(&center_pane.clone(), multi_workspace.clone(), window, cx)
         });
 
         let session_id = app_state.session.read(cx).id().to_owned();
@@ -2179,6 +2175,7 @@ impl Workspace {
             last_active_center_pane: Some(center_pane.downgrade()),
             last_active_view_id: None,
             status_bar,
+            dock_buttons: [left_dock_buttons, right_dock_buttons, bottom_dock_buttons],
             modal_layer,
             toast_layer,
             titlebar_item: None,
@@ -9101,6 +9098,24 @@ impl Workspace {
             )
     }
 
+    fn render_activity_bar(&self, cx: &App) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        v_flex()
+            .id("activity-bar")
+            .h_full()
+            .flex_none()
+            .py_1()
+            .px_1()
+            .gap_2()
+            .items_center()
+            .bg(colors.status_bar_background)
+            .border_t_1()
+            .border_b_1()
+            .border_r_1()
+            .border_color(colors.border)
+            .children(self.dock_buttons.iter().cloned())
+    }
+
     fn render_dock(
         &self,
         position: DockPosition,
@@ -10272,6 +10287,12 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(
+                        h_flex()
+                            .flex_1()
+                            .w_full()
+                            .min_h_0()
+                            .child(self.render_activity_bar(cx))
+                            .child(
                         div()
                             .id("workspace")
                             .bg(colors.background)
@@ -10656,6 +10677,7 @@ impl Render for Workspace {
                                 })
                             }))
                             .children(self.render_notifications(window, cx)),
+                            ),
                     )
                     .when(self.status_bar_visible(cx), |parent| {
                         parent.child(self.status_bar.clone())

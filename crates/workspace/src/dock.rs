@@ -2,7 +2,7 @@ use crate::focus_follows_mouse::FocusFollowsMouse as _;
 use crate::persistence::model::DockData;
 use crate::status_bar::HideStatusItem;
 use crate::{DraggedDock, Event, ModalLayer, Pane, WorkspaceSettings};
-use crate::{Workspace, status_bar::StatusItemView};
+use crate::Workspace;
 use anyhow::Context as _;
 use client::proto;
 use db::kvp::KeyValueStore;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsStore, TerminalDockPosition};
 use std::sync::Arc;
 use ui::{
-    ContextMenu, CountBadge, Divider, DividerColor, IconButton, Tooltip, prelude::*,
+    ContextMenu, CountBadge, IconButton, Tooltip, prelude::*, rems_from_px,
     right_click_menu,
 };
 use util::ResultExt as _;
@@ -1400,14 +1400,11 @@ impl Render for PanelButtons {
         let is_open = dock.is_open;
         let dock_position = dock.position;
 
-        let (menu_anchor, menu_attach) = match dock.position {
-            DockPosition::Left => (Anchor::BottomLeft, Anchor::TopLeft),
-            DockPosition::Bottom | DockPosition::Right => (Anchor::BottomRight, Anchor::TopRight),
-        };
+        let (menu_anchor, menu_attach) = (Anchor::TopLeft, Anchor::TopRight);
 
         let dock_entity = self.dock.clone();
         let workspace = dock.workspace.clone();
-        let mut buttons: Vec<_> = dock
+        let buttons: Vec<_> = dock
             .panel_entries
             .iter()
             .enumerate()
@@ -1540,7 +1537,8 @@ impl Render for PanelButtons {
                             // Include active state in element ID to invalidate the cached
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
                             let button = IconButton::new((name, is_active_button as u64), icon)
-                                .icon_size(IconSize::Small)
+                                .icon_size(IconSize::Custom(rems_from_px(20.)))
+                                .size(ButtonSize::Large)
                                 .toggle_state(is_active_button)
                                 .tab_index(0isize)
                                 .aria_label(icon_tooltip)
@@ -1569,41 +1567,7 @@ impl Render for PanelButtons {
             })
             .collect();
 
-        if dock_position == DockPosition::Right {
-            buttons.reverse();
-        }
-
-        let has_buttons = !buttons.is_empty();
-
-        h_flex()
-            .gap_1()
-            .when(
-                has_buttons
-                    && (dock.position == DockPosition::Bottom
-                        || dock.position == DockPosition::Right),
-                |this| this.child(Divider::vertical().color(DividerColor::Border)),
-            )
-            .children(buttons)
-            .when(has_buttons && dock.position == DockPosition::Left, |this| {
-                this.child(Divider::vertical().color(DividerColor::Border))
-            })
-    }
-}
-
-impl StatusItemView for PanelButtons {
-    fn set_active_pane_item(
-        &mut self,
-        _active_pane_item: Option<&dyn crate::ItemHandle>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        // Nothing to do, panel buttons don't depend on the active center item
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        // Panel buttons are hidden on a per-panel basis through each panel
-        // button's own context menu.
-        None
+        v_flex().gap_1().items_center().children(buttons)
     }
 }
 
