@@ -7208,6 +7208,38 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    fn project_switcher_section() -> [SettingsPageItem; 2] {
+        [
+            SettingsPageItem::SectionHeader("Project Switcher"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Switcher Folder",
+                description: "Folder whose subfolders are listed in the Project Switcher panel. Selecting one opens it in the current window.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("project_switcher.folder"),
+                    pick: |settings_content| {
+                        settings_content.project_switcher.as_ref()?.folder.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_switcher
+                            .get_or_insert_default()
+                            .folder = value;
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("e.g. ~/Projects"),
+                    display_confirm_button: true,
+                    display_clear_button: true,
+                    confirm_on_focus_out: true,
+                    treat_missing_text_as_empty: true,
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+        ]
+    }
+
     SettingsPage {
         title: "Panels",
         items: concat_sections![
@@ -7218,6 +7250,7 @@ fn panels_page() -> SettingsPage {
             debugger_panel_section(),
             collaboration_panel_section(),
             agent_panel_section(),
+            project_switcher_section(),
         ],
     }
 }
@@ -9464,6 +9497,22 @@ fn ai_page(cx: &App) -> SettingsPage {
                             .agent
                             .get_or_insert_default()
                             .expand_edit_card = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Claude Mode",
+                description: "Open new agent panel entries as Terminal Threads running the `claude` CLI instead of using ACP, keeping usage on your Claude subscription.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.claude_mode"),
+                    pick: |settings_content| {
+                        settings_content.agent.as_ref()?.claude_mode.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.agent.get_or_insert_default().claude_mode = value;
                     },
                 }),
                 metadata: None,

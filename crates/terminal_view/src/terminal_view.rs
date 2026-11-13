@@ -1582,6 +1582,58 @@ impl Render for TerminalView {
                 )
                 .with_priority(1)
             }))
+            .children(self.render_selection_button(window, cx))
+    }
+}
+
+impl TerminalView {
+    /// A floating "Add to Chat" button under a finished, non-empty selection.
+    fn render_selection_button(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        if matches!(self.mode, TerminalMode::Embedded { .. })
+            || self.context_menu.is_some()
+            || project::DisableAiSettings::get_global(cx).disable_ai
+            || !window.is_action_available(&AddSelectionToThread, cx)
+        {
+            return None;
+        }
+        let terminal = self.terminal.read(cx);
+        if terminal.selection_started() {
+            return None;
+        }
+        let content = &terminal.last_content;
+        let selection = content.selection.as_ref()?;
+        if !content.selection_text.as_ref().is_some_and(|text| !text.is_empty()) {
+            return None;
+        }
+        let bounds = &content.terminal_bounds;
+        let row = selection.end.line + content.display_offset as i32;
+        if row < 0 || row as usize >= content.screen_lines {
+            return None;
+        }
+        let position = GpuiPoint {
+            x: bounds.bounds.origin.x + bounds.cell_width * selection.end.column as f32,
+            y: bounds.bounds.origin.y + bounds.line_height * (row + 1) as f32,
+        };
+        Some(
+            deferred(
+                anchored()
+                    .position(position)
+                    .anchor(gpui::Anchor::TopLeft)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        h_flex().occlude().elevation_2(cx).p_0p5().child(
+                            Button::new("add-terminal-selection-to-chat", "Add to Chat")
+                                .style(ButtonStyle::Subtle)
+                                .size(ButtonSize::Compact)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(AddSelectionToThread.boxed_clone(), cx)
+                                }),
+                        ),
+                    ),
+            )
+            .with_priority(1)
+            .into_any(),
+        )
     }
 }
 

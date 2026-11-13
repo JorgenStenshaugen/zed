@@ -189,6 +189,21 @@ pub struct AutoUpdater {
     dismissed_status: Option<AutoUpdateStatus>,
 }
 
+const LATEST_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/JorgenStenshaugen/zed/releases/latest";
+
+#[derive(Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ReleaseAsset {
     pub version: String,
@@ -674,6 +689,56 @@ impl AutoUpdater {
         Ok(Some(release.url))
     }
 
+    async fn get_github_release_asset(
+        http_client: &Arc<HttpClientWithUrl>,
+        os: &str,
+        arch: &str,
+    ) -> Result<ReleaseAsset> {
+        anyhow::ensure!(
+            os == "macos",
+            "ZEDCode releases are only published for macOS"
+        );
+
+        let mut response = http_client
+            .get(LATEST_RELEASE_API_URL, Default::default(), true)
+            .await?;
+        let mut body = Vec::new();
+        response.body_mut().read_to_end(&mut body).await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "failed to fetch latest release: {:?}",
+            String::from_utf8_lossy(&body),
+        );
+
+        let release: GithubRelease = serde_json::from_slice(&body).with_context(|| {
+            format!(
+                "error deserializing release {:?}",
+                String::from_utf8_lossy(&body),
+            )
+        })?;
+
+        let asset_name = format!("ZEDCode-{arch}.dmg");
+        let asset = release
+            .assets
+            .into_iter()
+            .find(|asset| asset.name == asset_name)
+            .with_context(|| {
+                format!(
+                    "release {} has no asset named {asset_name}",
+                    release.tag_name
+                )
+            })?;
+
+        Ok(ReleaseAsset {
+            version: release
+                .tag_name
+                .strip_prefix('v')
+                .unwrap_or(&release.tag_name)
+                .to_string(),
+            url: asset.browser_download_url,
+        })
+    }
+
     async fn get_release_asset(
         this: &Entity<Self>,
         release_channel: ReleaseChannel,
@@ -684,6 +749,10 @@ impl AutoUpdater {
         cx: &mut AsyncApp,
     ) -> Result<ReleaseAsset> {
         let client = this.read_with(cx, |this, _| this.client.clone());
+
+        if asset == "zed" && version.is_none() {
+            return Self::get_github_release_asset(&client.http_client(), os, arch).await;
+        }
 
         let (system_id, metrics_id, is_staff) = if client.telemetry().metrics_enabled() {
             (

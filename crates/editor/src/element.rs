@@ -9848,6 +9848,13 @@ impl Element for EditorElement {
                         window,
                         cx,
                     );
+                    let selection_button = self.layout_selection_button(
+                        &snapshot,
+                        start_row..end_row,
+                        content_origin,
+                        window,
+                        cx,
+                    );
 
                     window.with_element_namespace("crease_toggles", |window| {
                         self.prepaint_crease_toggles(
@@ -10057,6 +10064,7 @@ impl Element for EditorElement {
                         edit_prediction_popover,
                         diff_hunk_controls,
                         mouse_context_menu,
+                        selection_button,
                         test_indicators,
                         bookmarks,
                         breakpoints,
@@ -10176,6 +10184,9 @@ impl Element for EditorElement {
                     self.paint_scrollbars(layout, window, cx);
                     self.paint_edit_prediction_popover(layout, window, cx);
                     self.paint_mouse_context_menu(layout, window, cx);
+                    if let Some(selection_button) = layout.selection_button.as_mut() {
+                        selection_button.paint(window, cx);
+                    }
                 });
             })
         })
@@ -10276,6 +10287,7 @@ pub struct EditorLayout {
     crease_trailers: Vec<Option<CreaseTrailerLayout>>,
     edit_prediction_popover: Option<AnyElement>,
     mouse_context_menu: Option<AnyElement>,
+    selection_button: Option<AnyElement>,
     tab_invisible: ShapedLine,
     space_invisible: ShapedLine,
     sticky_buffer_header: Option<AnyElement>,

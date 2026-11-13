@@ -1,0 +1,30 @@
+name: ZEDCode release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  bundle_mac_aarch64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp release channel and version from tag
+        run: |
+          echo -n stable > crates/zed/RELEASE_CHANNEL
+          perl -pi -e 'BEGIN { $v = shift } s/^version = ".*"/version = "$v"/ if /^version = / && !$done++' "${GITHUB_REF_NAME#v}" crates/zed/Cargo.toml
+
+      - name: Bundle (ad-hoc signed, no notarization)
+        run: script/bundle-mac aarch64-apple-darwin
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-apple-darwin/release/Zed-aarch64.dmg ZEDCode-aarch64.dmg
+          gh release create "$GITHUB_REF_NAME" ZEDCode-aarch64.dmg --title "ZEDCode ${GITHUB_REF_NAME#v}" --generate-notes

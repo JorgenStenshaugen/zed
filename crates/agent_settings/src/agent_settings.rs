@@ -242,6 +242,7 @@ pub struct AgentSettings {
     pub expand_edit_card: bool,
     pub expand_terminal_card: bool,
     pub terminal_init_command: Option<String>,
+    pub claude_mode: bool,
     pub thinking_display: ThinkingBlockDisplay,
     pub cancel_generation_on_terminal_stop: bool,
     pub use_modifier_to_send: bool,
@@ -839,6 +840,7 @@ impl Settings for AgentSettings {
             terminal_init_command: agent
                 .terminal_init_command
                 .filter(|command| !command.trim().is_empty()),
+            claude_mode: agent.claude_mode.unwrap(),
             thinking_display: agent.thinking_display.unwrap(),
             cancel_generation_on_terminal_stop: agent.cancel_generation_on_terminal_stop.unwrap(),
             use_modifier_to_send: agent.use_modifier_to_send.unwrap(),

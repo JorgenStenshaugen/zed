@@ -1011,6 +1011,11 @@
       "on_drop": true,
     },
   },
+  "project_switcher": {
+    // Folder whose subfolders are listed in the Project Switcher panel,
+    // e.g. "~/Projects". Selecting one opens it in the current window.
+    "folder": null
+  },
   "outline_panel": {
     // Whether to show the outline panel button in the status bar
     "button": true,
@@ -1402,6 +1407,9 @@
     //
     // Example: "terminal_init_command": "claude"
     "terminal_init_command": "",
+    // Open new agent panel entries as Terminal Threads running the `claude` CLI
+    // instead of using ACP. `terminal_init_command` overrides the command when set.
+    "claude_mode": false,
     // How thinking blocks should be displayed by default in the agent panel.
     //
     // Default: auto

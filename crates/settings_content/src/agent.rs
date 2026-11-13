@@ -368,6 +368,14 @@ pub struct AgentSettingsContent {
     ///
     /// Default: ""
     pub terminal_init_command: Option<String>,
+    /// Whether new agent panel entries open as Terminal Threads running the `claude` CLI
+    /// instead of using ACP. Running Claude Code interactively keeps usage on your
+    /// Claude subscription. Local projects also connect `claude` to Zed's IDE integration, which
+    /// shares the active selection and open editors with it. `terminal_init_command` overrides
+    /// the command when set.
+    ///
+    /// Default: false
+    pub claude_mode: Option<bool>,
     /// How thinking blocks should be displayed by default in the agent panel.
     ///
     /// Default: automatic

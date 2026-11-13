@@ -471,6 +471,7 @@ dependencies = [
  "base64 0.22.1",
  "buffer_diff",
  "chrono",
+ "claude_ide",
  "client",
  "clock",
  "cloud_api_types",
@@ -3000,6 +3001,34 @@ name = "clap_lex"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
+
+[[package]]
+name = "claude_ide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel 2.5.0",
+ "async-tungstenite",
+ "buffer_diff",
+ "editor",
+ "futures 0.3.34",
+ "gpui",
+ "language",
+ "log",
+ "lsp",
+ "parking_lot",
+ "paths",
+ "project",
+ "rand 0.9.4",
+ "serde_json",
+ "settings",
+ "smol",
+ "text",
+ "ui",
+ "url",
+ "util",
+ "workspace",
+]
 
 [[package]]
 name = "cli"

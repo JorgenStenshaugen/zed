@@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
 use crate::ManageProfiles;
 use crate::agent_connection_store::AgentConnectionStore;
 use crate::completion_provider::{AgentContextSelection, AgentContextSource};
+use claude_ide::ClaudeIde;
 use crate::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
     normalize_terminal_custom_title, terminal_title_without_prefix,
@@ -682,6 +683,11 @@ pub fn init(cx: &mut App) {
                                 if let Some(terminal_id) = panel.active_terminal_id()
                                     && let Some(agent_terminal) = panel.terminals.get(&terminal_id)
                                 {
+                                    if panel.mention_via_claude_ide(&selection, cx) {
+                                        let view = agent_terminal.view.clone();
+                                        window.focus(&view.focus_handle(cx), cx);
+                                        return;
+                                    }
                                     // Resolve mentions against the cwd: live cwd, else spawn dir.
                                     let working_directory = agent_terminal
                                         .view
@@ -723,6 +729,38 @@ pub fn init(cx: &mut App) {
         },
     )
     .detach();
+}
+
+impl AgentPanel {
+    /// Sends an editor selection to a connected Claude Code session as an
+    /// `at_mentioned` notification. Returns false when the caller should paste instead.
+    fn mention_via_claude_ide(&self, selection: &AgentContextSelection, cx: &App) -> bool {
+        let (Some(claude_ide), AgentContextSelection::Editor(ranges)) =
+            (&self.claude_ide, selection)
+        else {
+            return false;
+        };
+        let claude_ide = claude_ide.read(cx);
+        if !claude_ide.is_connected() {
+            return false;
+        }
+        let mentions = ranges
+            .iter()
+            .map(|(buffer, range)| {
+                let buffer = buffer.read(cx);
+                let path = buffer.file()?.as_local()?.abs_path(cx);
+                let range = range.to_point(&buffer.snapshot());
+                Some((path, range.start.row, range.end.row))
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(mentions) = mentions.filter(|mentions| !mentions.is_empty()) else {
+            return false;
+        };
+        for (path, start_row, end_row) in mentions {
+            claude_ide.mention(&path, start_row, end_row);
+        }
+        true
+    }
 }
 
 fn format_selection_for_terminal(
@@ -955,6 +993,12 @@ pub(crate) struct AgentThread {
     conversation_view: Entity<ConversationView>,
 }
 
+#[derive(Clone, Copy)]
+enum PanelTab {
+    Thread(ThreadId),
+    Terminal(TerminalId),
+}
+
 struct AgentTerminal {
     view: Entity<TerminalView>,
     title_editor: Option<Entity<Editor>>,
@@ -1134,6 +1178,7 @@ pub struct AgentPanel {
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     terminals: HashMap<TerminalId, AgentTerminal>,
     pending_terminal_spawn: Option<TerminalId>,
+    claude_ide: Option<Entity<ClaudeIde>>,
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
     new_thread_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -1565,6 +1610,7 @@ impl AgentPanel {
             retained_threads: HashMap::default(),
             terminals: HashMap::default(),
             pending_terminal_spawn: None,
+            claude_ide: None,
             #[cfg(test)]
             test_terminal_spawn_gate: None,
             new_thread_menu_handle: PopoverMenuHandle::default(),
@@ -2029,7 +2075,8 @@ impl AgentPanel {
     }
 
     pub fn should_create_terminal_for_new_entry(&self, cx: &App) -> bool {
-        self.last_created_entry_kind == AgentPanelEntryKind::Terminal
+        (AgentSettings::get_global(cx).claude_mode
+            || self.last_created_entry_kind == AgentPanelEntryKind::Terminal)
             && self.project.read(cx).supports_terminal(cx)
     }
 
@@ -2073,7 +2120,7 @@ impl AgentPanel {
         self.pending_terminal_spawn = Some(terminal_id);
         let terminal_working_directory = working_directory.clone();
         let init_command = Self::terminal_init_command(run_init_command, cx);
-        let terminal_task = self.create_terminal_shell(working_directory, cx);
+        let terminal_task = self.create_terminal_shell(working_directory, window, cx);
         let workspace = self.workspace.clone();
         let workspace_id = self.workspace_id;
         let project = self.project.downgrade();
@@ -2127,6 +2174,7 @@ impl AgentPanel {
     fn create_terminal_shell(
         &mut self,
         working_directory: Option<PathBuf>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<terminal::Terminal>>> {
         // A real shell ties the spawn's timing to the host, so a test that needs
@@ -2140,14 +2188,41 @@ impl AgentPanel {
             });
         }
 
+        // The IDE server listens on loopback, so it can't reach a remote project's shell.
+        if AgentSettings::get_global(cx).claude_mode
+            && self.project.read(cx).is_local()
+            && let Some(workspace) = self.workspace.upgrade()
+        {
+            let claude_ide = self
+                .claude_ide
+                .get_or_insert_with(|| ClaudeIde::new(&workspace, window, cx))
+                .clone();
+            let ide_env = claude_ide.read(cx).terminal_env();
+            let project = self.project.clone();
+            return cx.spawn(async move |_, cx| {
+                let env = ide_env.await.into_iter().collect();
+                project
+                    .update(cx, |project, cx| {
+                        project.create_terminal_shell_with_env(working_directory, env, cx)
+                    })
+                    .await
+            });
+        }
+
         self.project.update(cx, |project, cx| {
             project.create_terminal_shell(working_directory, cx)
         })
     }
 
     fn terminal_init_command(run_init_command: bool, cx: &App) -> Option<String> {
+        let settings = AgentSettings::get_global(cx);
         run_init_command
-            .then(|| AgentSettings::get_global(cx).terminal_init_command.clone())
+            .then(|| {
+                settings
+                    .terminal_init_command
+                    .clone()
+                    .or_else(|| settings.claude_mode.then(|| "claude".to_string()))
+            })
             .flatten()
             .filter(|command| !command.trim().is_empty())
     }
@@ -6348,6 +6423,25 @@ impl AgentPanel {
         cx.notify();
     }
 
+    fn close_terminal_tab(
+        &mut self,
+        terminal_id: TerminalId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_active = self.active_terminal_id() == Some(terminal_id);
+        let mut remaining = self.terminals.keys().copied().collect::<Vec<_>>();
+        remaining.retain(|id| *id != terminal_id);
+        remaining.sort_by_key(|id| self.terminals.get(id).map(|terminal| terminal.created_at));
+        self.close_terminal_without_activating_draft(terminal_id, window, cx);
+        if was_active {
+            match remaining.last().copied() {
+                Some(neighbor) => self.activate_terminal(neighbor, true, window, cx),
+                None => self.new_thread(&NewThread, window, cx),
+            }
+        }
+    }
+
     fn render_thread_tabs(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let store = ThreadMetadataStore::try_global(cx)?.read(cx);
         let draft_thread_id = self
@@ -6355,34 +6449,58 @@ impl AgentPanel {
             .as_ref()
             .map(|draft| draft.read(cx).thread_id);
         let active_thread_id = self.active_thread_id(cx);
-        let threads = self
+        let mut threads = self
             .open_thread_ids
             .iter()
             .filter_map(|thread_id| {
                 if let Some(metadata) = store.entry(*thread_id) {
-                    return Some((*thread_id, metadata.display_title()));
+                    return Some((
+                        PanelTab::Thread(*thread_id),
+                        metadata.display_title(),
+                        Some(*thread_id) == active_thread_id,
+                    ));
                 }
                 // Unsent drafts may not have a metadata row yet; keep their tab
                 // only while the panel still holds them in memory.
                 let in_memory = Some(*thread_id) == active_thread_id
                     || Some(*thread_id) == draft_thread_id
                     || self.retained_threads.contains_key(thread_id);
-                in_memory.then(|| (*thread_id, crate::DEFAULT_THREAD_TITLE.into()))
+                in_memory.then(|| {
+                    (
+                        PanelTab::Thread(*thread_id),
+                        crate::DEFAULT_THREAD_TITLE.into(),
+                        Some(*thread_id) == active_thread_id,
+                    )
+                })
             })
-            .collect::<Vec<(ThreadId, SharedString)>>();
+            .collect::<Vec<(PanelTab, SharedString, bool)>>();
+        let active_terminal_id = self.active_terminal_id();
+        let mut terminals = self.terminals.iter().collect::<Vec<_>>();
+        terminals.sort_by_key(|(_, terminal)| terminal.created_at);
+        threads.extend(terminals.into_iter().map(|(terminal_id, terminal)| {
+            let title = terminal.title(cx);
+            let title = if title.is_empty() {
+                SharedString::from("Terminal")
+            } else {
+                title
+            };
+            (
+                PanelTab::Terminal(*terminal_id),
+                title,
+                Some(*terminal_id) == active_terminal_id,
+            )
+        }));
         if threads.is_empty() {
             return None;
         }
 
-        let selected_index = threads
-            .iter()
-            .position(|(thread_id, _)| Some(*thread_id) == active_thread_id);
+        let selected_index = threads.iter().position(|(_, _, selected)| *selected);
         let last_index = threads.len() - 1;
 
         let tabs = threads
             .into_iter()
             .enumerate()
-            .map(|(index, (thread_id, display_title))| {
+            .map(|(index, (tab, display_title, _))| {
                 let position = if index == 0 {
                     TabPosition::First
                 } else if index == last_index {
@@ -6402,7 +6520,14 @@ impl AgentPanel {
                             .tooltip(Tooltip::text("Close Tab"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.close_thread_tab(thread_id, window, cx);
+                                match tab {
+                                    PanelTab::Thread(thread_id) => {
+                                        this.close_thread_tab(thread_id, window, cx)
+                                    }
+                                    PanelTab::Terminal(terminal_id) => {
+                                        this.close_terminal_tab(terminal_id, window, cx)
+                                    }
+                                }
                             })),
                     )
                     .child(
@@ -6413,8 +6538,13 @@ impl AgentPanel {
                         ),
                     )
                     .tooltip(Tooltip::text(display_title))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_thread_tab(thread_id, window, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| match tab {
+                        PanelTab::Thread(thread_id) => {
+                            this.activate_thread_tab(thread_id, window, cx)
+                        }
+                        PanelTab::Terminal(terminal_id) => {
+                            this.activate_terminal(terminal_id, true, window, cx)
+                        }
                     }))
             });
 

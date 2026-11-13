@@ -313,8 +313,8 @@ osx_url_schemes = ["zed"]
 
 [package.metadata.bundle-stable]
 icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
-identifier = "dev.zed.Zed"
-name = "Zed"
+identifier = "dev.zedcode.ZEDCode"
+name = "ZEDCode"
 category = "Developer Tool"
 osx_minimum_system_version = "12.0"
 osx_info_plist_exts = ["resources/info/*"]

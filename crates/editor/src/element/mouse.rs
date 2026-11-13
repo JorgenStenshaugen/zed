@@ -4,17 +4,19 @@ use std::time::{Duration, Instant};
 use collections::HashMap;
 use feature_flags::{DiffReviewFeatureFlag, FeatureFlagAppExt as _};
 use gpui::{
-    AnyElement, App, AvailableSpace, ClickEvent, Context, DispatchPhase, Element, MouseButton,
+    Action as _, AnyElement, App, AvailableSpace, ClickEvent, Context, DispatchPhase, Element, MouseButton,
     MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    ParentElement, Pixels, PressureStage, ScrollDelta, ScrollEvent, Window, anchored, deferred,
-    point, px,
+    InteractiveElement as _, ParentElement, Pixels, PressureStage, ScrollDelta, ScrollEvent, Styled, Window, anchored,
+    deferred, point, px,
 };
 use multi_buffer::MultiBufferRow;
 use project::DisableAiSettings;
 use settings::Settings;
 use sum_tree::Bias;
 use text::SelectionGoal;
+use ui::{Button, ButtonCommon as _, ButtonSize, ButtonStyle, Clickable as _, StyledExt as _, h_flex};
 use util::{RangeExt, debug_panic};
+use zed_actions::agent::AddSelectionToThread;
 
 use super::{EditorElement, EditorLayout, LineNumberLayout, PositionMap, SplitSide};
 use crate::{
@@ -343,6 +345,64 @@ impl EditorElement {
             )
         })?;
 
+        element.prepaint_as_root(position, AvailableSpace::min_size(), window, cx);
+        Some(element)
+    }
+
+    /// A floating "Add to Chat" button under a finished, non-empty selection.
+    pub(super) fn layout_selection_button(
+        &self,
+        editor_snapshot: &EditorSnapshot,
+        visible_range: Range<DisplayRow>,
+        content_origin: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let position = self.editor.update(cx, |editor, cx| {
+            if !editor.mode().is_full()
+                || editor.has_pending_selection()
+                || editor.mouse_context_menu.is_some()
+                || !editor.is_focused(window)
+                || DisableAiSettings::get_global(cx).disable_ai
+            {
+                return None;
+            }
+            let selection = *editor.selections.newest_anchor();
+            if selection.start == selection.end {
+                return None;
+            }
+            // Excerpted multibuffers have no single file to mention.
+            editor.buffer().read(cx).as_singleton()?;
+            let end_row = selection.end.to_display_point(editor_snapshot).row();
+            if !visible_range.contains(&end_row) {
+                return None;
+            }
+            let line_height = editor.style(cx).text.line_height_in_pixels(window.rem_size());
+            let end = editor.to_pixel_point(selection.end, editor_snapshot, window, cx)?;
+            Some(content_origin + end + point(px(0.), line_height))
+        })?;
+        if !window.is_action_available(&AddSelectionToThread, cx) {
+            return None;
+        }
+
+        let mut element = deferred(
+            anchored()
+                .position(position)
+                .anchor(gpui::Anchor::TopLeft)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    h_flex().occlude().elevation_2(cx).p_0p5().child(
+                        Button::new("add-selection-to-chat", "Add to Chat")
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::Compact)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(AddSelectionToThread.boxed_clone(), cx)
+                            }),
+                    ),
+                ),
+        )
+        .with_priority(1)
+        .into_any();
         element.prepaint_as_root(position, AvailableSpace::min_size(), window, cx);
         Some(element)
     }

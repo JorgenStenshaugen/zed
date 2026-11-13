@@ -1,5 +1,6 @@
 mod dev_container_suggest;
 pub mod disconnected_overlay;
+pub mod project_switcher;
 mod remote_connections;
 mod remote_servers;
 pub mod sidebar_recent_projects;
@@ -206,6 +207,8 @@ pub(crate) fn default_open_in_new_window(cx: &App) -> bool {
 }
 
 pub fn init(cx: &mut App) {
+    project_switcher::init(cx);
+
     #[cfg(target_os = "windows")]
     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
         let create_new_window = open_wsl

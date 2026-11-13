@@ -276,6 +276,8 @@ pub struct SettingsContent {
 
     pub outline_panel: Option<OutlinePanelSettingsContent>,
 
+    pub project_switcher: Option<ProjectSwitcherSettingsContent>,
+
     pub project_panel: Option<ProjectPanelSettingsContent>,
 
     /// Configuration for Node-related features
@@ -410,7 +412,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
+        journal, log, line_indicator_format, language_models, copilot, outline_panel, project_switcher, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
         instrumentation,
@@ -1225,6 +1227,16 @@ pub enum HourFormat {
     #[default]
     Hour12,
     Hour24,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct ProjectSwitcherSettingsContent {
+    /// Folder whose direct subfolders are listed in the Project Switcher panel.
+    /// A leading `~` expands to the home directory.
+    ///
+    /// Default: null
+    pub folder: Option<String>,
 }
 
 #[with_fallible_options]

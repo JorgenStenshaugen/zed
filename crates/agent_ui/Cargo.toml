@@ -41,6 +41,7 @@ audio = { workspace = true, optional = true }
 base64.workspace = true
 buffer_diff.workspace = true
 chrono.workspace = true
+claude_ide.workspace = true
 client.workspace = true
 clock.workspace = true
 cloud_api_types.workspace = true
